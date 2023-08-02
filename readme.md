@@ -6,4 +6,4 @@ Shipmate template for Go services.
 
 ## Images
 
-The template uses the [Ubuntu image](https://github.com/shipmate-io/ubuntu-image).
+The template uses the [Go image](https://github.com/shipmate-io/go-image).
