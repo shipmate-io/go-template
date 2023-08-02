@@ -1,0 +1,225 @@
+api: v1
+name: Go
+description: Go service
+
+form:
+
+  - name: Source code
+    questions:
+
+      - name: Path to source code
+        description: >
+          The absolute path in your Git repository of the directory containing the source code of your service.
+          For example: `/backend/`.
+        type: file_path
+        variable: path_to_source_code
+        required: true
+        default: /
+
+      - name: Start command
+        description: >
+          The command that must be executed to run the binary of your service.
+          For example: `bin/app`
+        type: string
+        variable: start_command
+        required: true
+
+      - name: Go version
+        description: The Go version in which the source code of your service is written.
+        type: select
+        variable: go_version
+        required: true
+        options:
+          - name: "1.20"
+            value: "1.20"
+        default: "1.20"
+
+  - name: Dependencies
+    questions:
+
+      - name: Install dependencies
+        description: Install the dependencies of your service.
+        type: boolean
+        variable: install_dependencies
+        required: true
+        default: true
+
+  - name: Build hooks
+    questions:
+
+      - name: Before build script
+        description: >
+          The script that must be executed before the build of your service starts. You can use this to install
+          additional system-level utilities or Linux packages your service depends on.
+        type: code
+        variable: before_build_script
+
+      - name: Build script
+        description: >
+          The script that must be executed to build your service. If you enabled the option to have the dependencies of
+          your service installed using Composer, this script is performed after the dependency installation.
+        type: code
+        variable: build_script
+
+  - name: Assets
+    questions:
+
+      - name: Publish assets
+        description: Publish the assets of your service to Shipmate's CDN.
+        type: boolean
+        variable: publish_assets
+
+      - name: Path to assets
+        description: >
+          The path, relative to your source code, of the directory containing the static assets of your service.
+          For example: `public/`.
+        type: file_path
+        variable: path_to_assets
+        required: true
+        default: public/
+        if: "{{ variables.publish_assets }}"
+
+  - name: Deploy hooks
+    questions:
+
+      - name: Deploy script
+        description: >
+          The script that must be executed every time the auto-scaler deploys a new instance of your service. The script
+          should only perform tasks of which the scope is limited to the current instance.
+        type: code
+        variable: deploy_script
+
+      - name: Release script
+        description: >
+          The script that must be executed every time a new version of your service is released. The script should only
+          perform tasks of which the scope spans multiple instances of your service, like migrating a database.
+        type: code
+        variable: release_script
+
+  - name: Workers
+    questions:
+
+      - name: Web worker
+        description: The configuration of the auto-scaled worker responsible for processing web requests.
+        type: worker_config
+        variable: web_worker_config
+        required: true
+
+      - name: CLI worker
+        description: The configuration of the auto-scaled worker responsible for processing CLI commands.
+        type: worker_config
+        variable: cli_worker_config
+        required: true
+
+      - name: Background workers
+        description: The configuration of the auto-scaled workers responsible for processing background jobs.
+        type: structs
+        variable: background_workers
+        questions:
+          - name: Name
+            description: >
+              A name in snake_case notation that helps you distinguish between multiple background workers.
+            type: string
+            variable: name
+            required: true
+          - name: Job retries
+            description: >
+              The number of times the execution of the job should be retried after the previous execution failed.
+            type: integer
+            variable: retries
+            required: true
+            default: 0
+          - name: Background worker
+            description: >
+              The configuration of the auto-scaled worker responsible for processing background jobs.
+            type: worker_config
+            variable: worker_config
+            required: true
+
+images:
+  
+  - name: go
+    dockerfile: Dockerfile
+    files:
+      - "{{ path('code-repository', variables.path_to_source_code, '**') }}"
+      - scripts/release.sh
+      - scripts/deploy.sh
+
+workers:
+
+  - name: web
+    alias: Web
+    instances:
+      minimum: "{{ variables.web_worker_config.minimum_instances }}"
+      maximum: "{{ variables.web_worker_config.maximum_instances }}"
+    concurrency: "{{ variables.web_worker_config.concurrency }}"
+    timeout: "{{ variables.web_worker_config.timeout }}"
+    image: go
+    environment:
+      - map: "{{ environment }}"
+      - name: CONTAINER_START_COMMAND
+        value: "{{ variables.start_command }}"
+      - name: CONTAINER_BASE_DIR
+        value: "{{ path('/var/www', variables.path_to_source_code) }}"
+    entrypoints:
+      web: {}
+    memory: "{{ variables.web_worker_config.memory }}"
+    cpus: "{{ variables.web_worker_config.cpus }}"
+
+  - name: cli
+    alias: CLI
+    instances:
+      minimum: "{{ variables.cli_worker_config.minimum_instances }}"
+      maximum: "{{ variables.cli_worker_config.maximum_instances }}"
+    concurrency: "{{ variables.cli_worker_config.concurrency }}"
+    timeout: "{{ variables.cli_worker_config.timeout }}"
+    image: go
+    environment:
+      - map: "{{ environment }}"
+      - name: CONTAINER_MODE
+        value: cli
+      - name: CLI_BASE_DIR
+        value: "{{ path('/var/www', variables.path_to_source_code) }}"
+    entrypoints:
+      cli: {}
+    memory: "{{ variables.cli_worker_config.memory }}"
+    cpus: "{{ variables.cli_worker_config.cpus }}"
+
+  - name: "worker_{{ loop.value.name }}"
+    alias: "{{ loop.value.name }} queue"
+    instances:
+      minimum: "{{ loop.value.worker_config.minimum_instances }}"
+      maximum: "{{ loop.value.worker_config.maximum_instances }}"
+    concurrency: "{{ loop.value.worker_config.concurrency }}"
+    timeout: "{{ loop.value.worker_config.timeout }}"
+    image: go
+    environment:
+      - map: "{{ environment }}"
+      - name: CONTAINER_START_COMMAND
+        value: "{{ variables.start_command }}"
+      - name: CONTAINER_BASE_DIR
+        value: "{{ path('/var/www', variables.path_to_source_code) }}"
+    entrypoints:
+      web: {}
+    memory: "{{ loop.value.worker_config.memory }}"
+    cpus: "{{ loop.value.worker_config.cpus }}"
+    loop: "{{ variables.background_workers }}"
+
+job_queues:
+
+  - name: "{{ loop.value.name }}"
+    timeout: "{{ loop.value.worker_config.timeout }}"
+    retries: "{{ loop.value.retries }}"
+    target:
+      worker: "worker_{{ loop.value.name }}"
+      path: /handle-job
+    loop: "{{ variables.background_workers }}"
+
+jobs:
+
+  - name: init
+    alias: Initialization
+    target:
+      worker: cli
+      command: "sh /scripts/release.sh"
+    if: "{{ variables.release_script }}"
