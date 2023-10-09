@@ -96,45 +96,36 @@ form:
         type: code
         variable: release_script
 
-  - name: Workers
+  - name: Worker
     questions:
 
-      - name: Web worker
-        description: The configuration of the auto-scaled worker responsible for processing web requests.
-        type: worker_config
-        variable: web_worker_config
+      - name: Timeout
+        description: The number of seconds after which a request should timeout.
+        type: integer
+        variable: timeout
         required: true
+        default: 10
 
-      - name: CLI worker
-        description: The configuration of the auto-scaled worker responsible for processing CLI commands.
-        type: worker_config
-        variable: cli_worker_config
+      - name: Memory
+        description: The amount of memory in megabytes available to process one request.
+        type: integer
+        minimum: 1
+        variable: worker_memory
         required: true
+        default: 32
 
-      - name: Background workers
-        description: The configuration of the auto-scaled workers responsible for processing background jobs.
-        type: structs
-        variable: background_workers
-        questions:
-          - name: Name
-            description: >
-              A name in snake_case notation that helps you distinguish between multiple background workers.
-            type: string
-            variable: name
-            required: true
-          - name: Job retries
-            description: >
-              The number of times the execution of the job should be retried after the previous execution failed.
-            type: integer
-            variable: retries
-            required: true
-            default: 0
-          - name: Background worker
-            description: >
-              The configuration of the auto-scaled worker responsible for processing background jobs.
-            type: worker_config
-            variable: worker_config
-            required: true
+      - name: Boost CPU
+        description: Double the CPU power available to process compute-intensive tasks.
+        type: boolean
+        variable: worker_boost_cpu
+
+      - name: Concurrency
+        description: The maximum number of requests that can be processed concurrently.
+        type: integer
+        minimum: 1
+        variable: worker_concurrency
+        required: true
+        default: 1000
 
 images:
   
@@ -148,12 +139,10 @@ images:
 workers:
 
   - name: web
-    alias: Web
-    instances:
-      minimum: "{{ variables.web_worker_config.minimum_instances }}"
-      maximum: "{{ variables.web_worker_config.maximum_instances }}"
-    concurrency: "{{ variables.web_worker_config.concurrency }}"
-    timeout: "{{ variables.web_worker_config.timeout }}"
+    cpu: "{{ variables.worker_boost_cpu ? 'boosted' : 'standard' }}"
+    memory: "{{ variables.worker_memory }}"
+    concurrency: "{{ variables.worker_concurrency }}"
+    timeout: "{{ variables.timeout }}"
     image: go
     environment:
       - map: "{{ environment }}"
@@ -161,18 +150,11 @@ workers:
         value: "{{ variables.start_command }}"
       - name: CONTAINER_BASE_DIR
         value: "{{ path('/var/www', variables.path_to_source_code) }}"
-    entrypoints:
-      web: {}
-    memory: "{{ variables.web_worker_config.memory }}"
-    cpus: "{{ variables.web_worker_config.cpus }}"
 
   - name: cli
-    alias: CLI
-    instances:
-      minimum: "{{ variables.cli_worker_config.minimum_instances }}"
-      maximum: "{{ variables.cli_worker_config.maximum_instances }}"
-    concurrency: "{{ variables.cli_worker_config.concurrency }}"
-    timeout: "{{ variables.cli_worker_config.timeout }}"
+    memory: 256
+    concurrency: 4
+    timeout: 600
     image: go
     environment:
       - map: "{{ environment }}"
@@ -180,46 +162,9 @@ workers:
         value: cli
       - name: CLI_BASE_DIR
         value: "{{ path('/var/www', variables.path_to_source_code) }}"
-    entrypoints:
-      cli: {}
-    memory: "{{ variables.cli_worker_config.memory }}"
-    cpus: "{{ variables.cli_worker_config.cpus }}"
-
-  - name: "worker_{{ loop.value.name }}"
-    alias: "{{ loop.value.name }} queue"
-    instances:
-      minimum: "{{ loop.value.worker_config.minimum_instances }}"
-      maximum: "{{ loop.value.worker_config.maximum_instances }}"
-    concurrency: "{{ loop.value.worker_config.concurrency }}"
-    timeout: "{{ loop.value.worker_config.timeout }}"
-    image: go
-    environment:
-      - map: "{{ environment }}"
-      - name: CONTAINER_START_COMMAND
-        value: "{{ variables.start_command }}"
-      - name: CONTAINER_BASE_DIR
-        value: "{{ path('/var/www', variables.path_to_source_code) }}"
-    entrypoints:
-      web: {}
-    memory: "{{ loop.value.worker_config.memory }}"
-    cpus: "{{ loop.value.worker_config.cpus }}"
-    loop: "{{ variables.background_workers }}"
-
-job_queues:
-
-  - name: "{{ loop.value.name }}"
-    timeout: "{{ loop.value.worker_config.timeout }}"
-    retries: "{{ loop.value.retries }}"
-    target:
-      worker: "worker_{{ loop.value.name }}"
-      path: /handle-job
-    loop: "{{ variables.background_workers }}"
 
 jobs:
 
   - name: init
-    alias: Initialization
-    target:
-      worker: cli
-      command: "sh /scripts/release.sh"
+    command: "sh /scripts/release.sh"
     if: "{{ variables.release_script }}"
